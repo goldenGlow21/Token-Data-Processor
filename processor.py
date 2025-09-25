@@ -9,7 +9,7 @@ from typing import Dict, List, Any
 
 class TokenDataProcessor:
     def __init__(self):
-        self.contract_analyzer_path = Path("../contractCodeAnalyzer")
+        pass
 
     def load_input_data(self, input_file: str) -> Dict[str, Any]:
         """Load and parse the input JSON file"""
@@ -34,12 +34,9 @@ class TokenDataProcessor:
         return processed
 
     def analyze_with_contract_analyzer(self, source_code: str) -> Dict[str, Any]:
-        """Run contract code analysis using the external analyzer"""
+        """Run contract code analysis using the local analyzer"""
         try:
-            # Import and use the contract analyzer directly
-            import sys
-            sys.path.append(str(self.contract_analyzer_path))
-            from contract_analyzer import ContractAnalyzer
+            from contract_analyzer.contract_analyzer import ContractAnalyzer
 
             analyzer = ContractAnalyzer()
             analysis_result = analyzer.analyze_contract(source_code)
@@ -47,56 +44,73 @@ class TokenDataProcessor:
             return analysis_result
 
         except Exception as e:
-            return {"error": str(e), "total_findings": 0, "findings_by_category": {}, "detailed_findings": []}
+            return {"error": str(e), "summary": {"total_issues": 0, "pattern_counts": {}}, "findings": []}
 
-    def detect_ste_issues(self, processed_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Detect STE (Security Token Exchange) related issues"""
-        source_code = processed_data['source_code']
-        issues = []
+    def calculate_risk_score(self, analysis_result: Dict[str, Any]) -> int:
+        """Calculate risk score based on pattern occurrences with weight coefficients"""
+        if 'summary' not in analysis_result:
+            return 100
+
+        pattern_counts = analysis_result['summary'].get('pattern_counts', {})
+
+        # Pattern weight coefficients based on maliciousness likelihood
+        pattern_weights = {
+            # Definitely malicious patterns (high coefficient)
+            'Direct Balance Assignment': 20.0,     # 직접 잔액 조작 = 확실한 스캠
+            'Balance Manipulation': 18.0,          # 잔액 조작 = 확실한 스캠
+            'Asymmetric Fee Structure': 15.0,      # 비대칭 수수료 = 허니팟 특성
+
+            # Very suspicious patterns (medium-high coefficient)
+            'Reentrancy Vulnerability': 10.0,      # 재진입 공격 취약점
+
+            # Could be legitimate but concerning (medium coefficient)
+            'Approve Function Manipulation': 3.0,  # approve 보안 조치 (정상일 수도)
+            'Hidden Minting': 2.0,                 # 숨겨진 민팅 (중앙화 토큰에선 가능)
+            'Unlimited Token Issuance': 2.0,       # 무제한 발행 (중앙화 토큰에선 가능)
+            'Sell-Path Block': 1.5,                # 매도 차단 (블랙리스트일 수도)
+
+            # Administrative features (very low coefficient)
+            'Contract Pause Abuse': 1.0,           # 컨트랙트 일시정지 (정상 기능일 수 있음)
+            'Pausable Exit Block': 0.8,            # 일시정지로 인한 차단
+            'Total Supply Manipulation': 0.5,      # 총 공급량 조작 (정상적일 수 있음)
+            'Owner Pause Bypass': 0.3,             # 오너 우회 권한
+            'Permanent Owner Control': 0.2,        # 영구 오너십 (일반적)
+            'Execution Order Dependency': 0.1,     # 실행 순서 의존성 (일반적)
+            'Missing Event': 0.1                   # 이벤트 누락 (코딩 실수)
+        }
+
+        # Base score starts at 100
         score = 100
+        total_weighted_issues = 0
 
-        # Basic STE detection patterns
-        ste_patterns = {
-            'unlimited_mint': ['mint(', '_mint(', 'totalSupply'],
-            'exit_restriction': ['transfer(', 'transferFrom(', 'approve('],
-            'owner_privileges': ['onlyOwner', 'owner', 'admin'],
-            'pausable_functions': ['pause(', 'unpause(', '_pause'],
-            'blacklist_functionality': ['blacklist', 'blocked', 'banned']
-        }
+        for pattern_name, count in pattern_counts.items():
+            if pattern_name in pattern_weights and count > 0:
+                # Only check if pattern exists, ignore count
+                weight = pattern_weights[pattern_name]
+                total_weighted_issues += weight
 
-        detection_counts = {}
+        # Convert weighted issues to score deduction
+        # More balanced scaling to allow proper differentiation
+        if total_weighted_issues > 0:
+            # Much gentler for low-weight administrative patterns
+            if total_weighted_issues <= 5:  # Administrative features
+                score_deduction = total_weighted_issues * 3
+            elif total_weighted_issues <= 15: # Mixed patterns
+                score_deduction = 15 + (total_weighted_issues - 5) * 2
+            else: # High malicious patterns
+                score_deduction = 35 + (total_weighted_issues - 15) * 3
 
-        for category, patterns in ste_patterns.items():
-            count = 0
-            for pattern in patterns:
-                count += source_code.count(pattern)
+            score_deduction = min(80, score_deduction)
+            score = int(score - score_deduction)
 
-            detection_counts[category] = count
-
-            # Scoring logic
-            if category == 'unlimited_mint' and count > 5:
-                score -= 20
-            elif category == 'owner_privileges' and count > 10:
-                score -= 15
-            elif category == 'blacklist_functionality' and count > 0:
-                score -= 10
-
-        return {
-            'detection_counts': detection_counts,
-            'issues': issues,
-            'score': max(0, score)
-        }
+        return max(0, score)
 
     def generate_result(self, input_data: Dict[str, Any], analysis_result: Dict[str, Any],
-                       ste_result: Dict[str, Any], source_hash: str) -> Dict[str, Any]:
+                       source_hash: str) -> Dict[str, Any]:
         """Generate final JSON result"""
         return {
             'category': 'STE',
-            'source_analysis': {
-                'detection_items': ste_result['detection_counts'],
-                'total_detections': sum(ste_result['detection_counts'].values())
-            },
-            'analysis_score': ste_result['score'],
+            'analysis_score': self.calculate_risk_score(analysis_result),
             'source_hash': source_hash,
             'contract_name': input_data.get('ContractName', 'Unknown'),
             'analyzer_result': analysis_result
@@ -116,11 +130,8 @@ class TokenDataProcessor:
         # Analyze with contract code analyzer
         analysis_result = self.analyze_with_contract_analyzer(processed_data['source_code'])
 
-        # Detect STE issues
-        ste_result = self.detect_ste_issues(processed_data)
-
         # Generate final result
-        return self.generate_result(input_data, analysis_result, ste_result, source_hash)
+        return self.generate_result(input_data, analysis_result, source_hash)
 
 def main():
     if len(sys.argv) != 2:
