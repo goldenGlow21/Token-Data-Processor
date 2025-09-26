@@ -4,10 +4,13 @@
 """
 import re
 from typing import List
-from contract_analyzer import AnalysisPattern, Finding
-class HoneypotPatterns(AnalysisPattern):
+from common.types import Finding, Severity
+from ..contract_analyzer import SourceCodePattern
+
+
+class HoneypotPatterns(SourceCodePattern):
     """허니팟 패턴 분석기"""
-    def analyze(self, contract_code: str) -> List[Finding]:
+    def _analyze_code(self, contract_code: str) -> List[Finding]:
         findings = []
         # 블랙리스트 시스템 탐지
         findings.extend(self._detect_blacklist_system(contract_code))
@@ -39,8 +42,11 @@ class HoneypotPatterns(AnalysisPattern):
                     findings.append(Finding(
                         pattern_name="Blacklist System",
                         description="블랙리스트 시스템이 구현되어 특정 주소의 토큰 전송을 차단할 수 있습니다.",
+                        severity=Severity.HIGH,
                         code_snippet=match.group(),
-                        line_number=line_num
+                        line_number=line_num,
+                        function_name=self._extract_function_name(code, line_num),
+                        recommendation="블랙리스트 시스템의 투명성과 정당한 사용 목적을 확인하세요."
                     ))
         return findings
     def _check_blacklist_in_transfer(self, code: str, blacklist_var: str) -> bool:

@@ -7,37 +7,50 @@ Ethereum Smart Contract Security Analyzer
 
 import re
 import json
+import time
+import hashlib
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
-from abc import ABC, abstractmethod
+
+from common.types import Finding, AnalysisResult, AnalysisReport, Severity, AnalysisType
+from common.interfaces import BaseAnalyzer, BasePattern
 
 
-@dataclass
-class Finding:
-    """탐지된 보안 이슈를 나타내는 데이터 클래스"""
-    pattern_name: str
-    description: str
-    code_snippet: str
-    line_number: Optional[int] = None
-    function_name: Optional[str] = None
-    recommendation: str = ""
+class SourceCodePattern(BasePattern):
+    """Source code analysis pattern base class"""
 
+    @property
+    def name(self) -> str:
+        return self.__class__.__name__.replace('Patterns', '').replace('Pattern', '')
 
-class AnalysisPattern(ABC):
-    """분석 패턴의 기본 추상 클래스"""
-
-    @abstractmethod
     def analyze(self, contract_code: str) -> List[Finding]:
-        """컨트랙트 코드를 분석하여 Finding 리스트를 반환"""
-        pass
+        """Analyze contract code and return findings"""
+        return self._analyze_code(contract_code)
+
+    def _analyze_code(self, contract_code: str) -> List[Finding]:
+        """Override this method in subclasses"""
+        raise NotImplementedError("Subclasses must implement _analyze_code")
+
+    def _extract_function_name(self, contract_code: str, line_number: int) -> Optional[str]:
+        """Extract function name for a given line number"""
+        lines = contract_code.split('\n')
+
+        for i in range(line_number - 1, -1, -1):
+            line = lines[i].strip()
+            func_match = re.search(r'function\s+(\w+)', line)
+            if func_match:
+                return func_match.group(1)
+            if re.search(r'\b(constructor|fallback|receive)\b', line):
+                constructor_match = re.search(r'\b(constructor|fallback|receive)\b', line)
+                return constructor_match.group(1)
+
+        return None
 
 
-class ContractAnalyzer:
+class ContractAnalyzer(BaseAnalyzer):
     """스마트 컨트랙트 보안 분석기 메인 클래스"""
 
     def __init__(self):
-        self.patterns: List[AnalysisPattern] = []
-        self._register_patterns()
+        super().__init__()
 
     def _register_patterns(self):
         """분석 패턴들을 등록"""
@@ -69,26 +82,63 @@ class ContractAnalyzer:
             ExitRestrictionPatterns()
         ])
 
-    def analyze_contract(self, contract_code: str) -> Dict[str, Any]:
+    def analyze(self, contract_code: str, **kwargs) -> AnalysisReport:
         """
         스마트 컨트랙트 코드를 분석하여 보안 이슈를 탐지
 
         Args:
             contract_code: 분석할 Solidity 컨트랙트 코드
+            **kwargs: 추가 매개변수
 
         Returns:
-            분석 결과를 담은 딕셔너리
+            분석 리포트
         """
-        all_findings = []
+        start_time = time.time()
 
+        # Create hash for the contract code
+        contract_hash = hashlib.sha256(contract_code.encode('utf-8')).hexdigest()
+
+        # Extract contract name
+        contract_name = self._extract_contract_name(contract_code)
+
+        # Run pattern analyses
+        results = []
         for pattern in self.patterns:
-            try:
-                findings = pattern.analyze(contract_code)
-                all_findings.extend(findings)
-            except Exception as e:
-                print(f"Error in pattern {pattern.__class__.__name__}: {e}")
+            result = self._run_pattern_analysis(pattern, contract_code)
+            results.append(result)
 
-        return self._generate_report(all_findings, contract_code)
+        total_time = time.time() - start_time
+
+        return AnalysisReport(
+            analysis_type=AnalysisType.SOURCE_CODE,
+            target_hash=contract_hash,
+            contract_name=contract_name,
+            results=results,
+            total_execution_time=total_time
+        )
+
+    def analyze_contract(self, contract_code: str) -> Dict[str, Any]:
+        """Legacy method for backward compatibility"""
+        report = self.analyze(contract_code)
+        return self._convert_to_legacy_format(report)
+
+    def _convert_to_legacy_format(self, report: AnalysisReport) -> Dict[str, Any]:
+        """Convert new report format to legacy format"""
+        # Merge duplicate findings for legacy format
+        merged_findings = self._merge_duplicate_findings(report.all_findings)
+
+        return {
+            "summary": {
+                "total_issues": report.total_issues,
+                "pattern_counts": report.pattern_counts
+            },
+            "findings": merged_findings
+        }
+
+    def _extract_contract_name(self, contract_code: str) -> str:
+        """Extract contract name from source code"""
+        contract_match = re.search(r'contract\s+(\w+)', contract_code)
+        return contract_match.group(1) if contract_match else "Unknown"
 
     def _extract_function_name(self, contract_code: str, line_number: int) -> Optional[str]:
         """주어진 라인 번호가 속한 함수명을 추출"""
@@ -108,13 +158,8 @@ class ContractAnalyzer:
 
         return None
 
-    def _merge_duplicate_findings(self, findings: List[Finding], contract_code: str) -> List[Finding]:
+    def _merge_duplicate_findings(self, findings: List[Finding]) -> List[Dict[str, Any]]:
         """같은 함수 내 동일 패턴의 중복 탐지를 합치기"""
-        # 각 Finding에 함수명 추가
-        for finding in findings:
-            if finding.line_number:
-                finding.function_name = self._extract_function_name(contract_code, finding.line_number)
-
         # 중복 제거를 위한 딕셔너리 (key: pattern_name + function_name)
         merged_findings = {}
 
@@ -145,7 +190,7 @@ class ContractAnalyzer:
     def _generate_report(self, findings: List[Finding], contract_code: str) -> Dict[str, Any]:
         """분석 결과 리포트 생성"""
         # 중복 제거 및 합치기
-        merged_findings = self._merge_duplicate_findings(findings, contract_code)
+        merged_findings = self._merge_duplicate_findings(findings)
 
         pattern_counts = {}
 
@@ -175,6 +220,26 @@ class ContractAnalyzer:
             raise FileNotFoundError(f"Contract file not found: {file_path}")
         except Exception as e:
             raise Exception(f"Error reading contract file: {e}")
+
+
+# Legacy compatibility - export the old class names
+AnalysisPattern = SourceCodePattern
+
+# Create a legacy Finding class for backward compatibility with existing patterns
+class LegacyFinding:
+    """Legacy Finding class for backward compatibility"""
+    def __init__(self, pattern_name: str, description: str, code_snippet: str,
+                 line_number: Optional[int] = None, function_name: Optional[str] = None,
+                 recommendation: str = ""):
+        self.pattern_name = pattern_name
+        self.description = description
+        self.code_snippet = code_snippet
+        self.line_number = line_number
+        self.function_name = function_name
+        self.recommendation = recommendation
+
+# For backward compatibility with existing patterns
+Finding = LegacyFinding
 
 
 def main():

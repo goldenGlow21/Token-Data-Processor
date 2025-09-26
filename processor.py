@@ -5,9 +5,14 @@ import hashlib
 import os
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional, Union
+
+from common.types import AnalysisReport, AnalysisType
+
 
 class TokenDataProcessor:
+    """Main processor for token data analysis"""
+
     def __init__(self):
         pass
 
@@ -33,18 +38,62 @@ class TokenDataProcessor:
         }
         return processed
 
-    def analyze_with_contract_analyzer(self, source_code: str) -> Dict[str, Any]:
-        """Run contract code analysis using the local analyzer"""
-        try:
+    def _get_analyzer(self, analysis_type: AnalysisType):
+        """Get appropriate analyzer based on analysis type"""
+        if analysis_type == AnalysisType.SOURCE_CODE:
             from contract_analyzer.contract_analyzer import ContractAnalyzer
+            return ContractAnalyzer()
+        elif analysis_type == AnalysisType.BYTECODE:
+            from bytecode_analyzer.bytecode_analyzer import BytecodeAnalyzer
+            return BytecodeAnalyzer()
+        else:
+            raise ValueError(f"Unsupported analysis type: {analysis_type}")
 
-            analyzer = ContractAnalyzer()
-            analysis_result = analyzer.analyze_contract(source_code)
-
-            return analysis_result
-
+    def analyze_with_contract_analyzer(self, source_code: str) -> Dict[str, Any]:
+        """Legacy method for backward compatibility"""
+        try:
+            analyzer = self._get_analyzer(AnalysisType.SOURCE_CODE)
+            return analyzer.analyze_contract(source_code)
         except Exception as e:
             return {"error": str(e), "summary": {"total_issues": 0, "pattern_counts": {}}, "findings": []}
+
+    def analyze_with_bytecode_analyzer(self, bytecode: str) -> Dict[str, Any]:
+        """Legacy method for backward compatibility"""
+        try:
+            analyzer = self._get_analyzer(AnalysisType.BYTECODE)
+            return analyzer.analyze_bytecode(bytecode)
+        except Exception as e:
+            return {"error": str(e), "summary": {"total_issues": 0, "pattern_counts": {}}, "findings": []}
+
+    def analyze(self, content: str, analysis_type: AnalysisType, **kwargs) -> AnalysisReport:
+        """
+        Unified analysis method using the new architecture
+
+        Args:
+            content: Source code or bytecode to analyze
+            analysis_type: Type of analysis to perform
+            **kwargs: Additional parameters
+
+        Returns:
+            Analysis report
+        """
+        try:
+            analyzer = self._get_analyzer(analysis_type)
+            return analyzer.analyze(content, **kwargs)
+        except Exception as e:
+            # Return error report
+            from common.types import AnalysisResult, AnalysisReport
+            error_result = AnalysisResult(
+                pattern_name="Analysis Error",
+                findings=[],
+                error=str(e)
+            )
+            return AnalysisReport(
+                analysis_type=analysis_type,
+                target_hash=hashlib.sha256(content.encode('utf-8')).hexdigest(),
+                contract_name=kwargs.get('contract_name', 'Unknown'),
+                results=[error_result]
+            )
 
     def calculate_risk_score(self, analysis_result: Dict[str, Any]) -> int:
         """Calculate risk score based on pattern occurrences with weight coefficients"""
@@ -105,33 +154,102 @@ class TokenDataProcessor:
 
         return max(0, score)
 
-    def generate_result(self, input_data: Dict[str, Any], analysis_result: Dict[str, Any],
+    def generate_result(self, input_data: Dict[str, Any], analysis_result: Union[Dict[str, Any], AnalysisReport],
                        source_hash: str) -> Dict[str, Any]:
         """Generate final JSON result"""
-        return {
-            'category': 'STE',
-            'analysis_score': self.calculate_risk_score(analysis_result),
-            'source_hash': source_hash,
-            'contract_name': input_data.get('ContractName', 'Unknown'),
-            'analyzer_result': analysis_result
-        }
+        if isinstance(analysis_result, AnalysisReport):
+            # New format - use built-in risk scoring
+            return analysis_result.to_dict()
+        else:
+            # Legacy format
+            return {
+                'category': 'STE',
+                'analysis_score': self.calculate_risk_score(analysis_result),
+                'source_hash': source_hash,
+                'contract_name': input_data.get('ContractName', 'Unknown'),
+                'analyzer_result': analysis_result
+            }
 
-    def process(self, input_file: str) -> Dict[str, Any]:
-        """Main processing function"""
+    def process(self, input_file: str, use_new_architecture: bool = True) -> Dict[str, Any]:
+        """
+        Main processing function
+
+        Args:
+            input_file: Path to input JSON file
+            use_new_architecture: Whether to use new unified architecture
+
+        Returns:
+            Analysis result dictionary
+        """
         # Load input data
         input_data = self.load_input_data(input_file)
 
-        # Calculate source code hash
-        source_hash = self.calculate_source_hash(input_data.get('SourceCode', ''))
+        # Check if input contains source code or bytecode
+        source_code = input_data.get('SourceCode', '')
+        bytecode = input_data.get('Bytecode', '')
 
-        # Preprocess data
-        processed_data = self.preprocess_data(input_data)
+        # Calculate hash (use source code if available, otherwise bytecode)
+        content_for_hash = source_code if source_code else bytecode
+        source_hash = self.calculate_source_hash(content_for_hash)
 
-        # Analyze with contract code analyzer
-        analysis_result = self.analyze_with_contract_analyzer(processed_data['source_code'])
+        if use_new_architecture:
+            # Use new unified architecture
+            if source_code and source_code.strip():
+                # Use contract analyzer for source code
+                processed_data = self.preprocess_data(input_data)
+                contract_name = input_data.get('ContractName', 'Unknown')
 
-        # Generate final result
-        return self.generate_result(input_data, analysis_result, source_hash)
+                analysis_result = self.analyze(
+                    processed_data['source_code'],
+                    AnalysisType.SOURCE_CODE,
+                    contract_name=contract_name
+                )
+            elif bytecode and bytecode.strip():
+                # Use bytecode analyzer for bytecode
+                contract_name = input_data.get('ContractName', 'Unknown')
+
+                analysis_result = self.analyze(
+                    bytecode,
+                    AnalysisType.BYTECODE,
+                    contract_name=contract_name
+                )
+            else:
+                # No valid input found - create error report
+                from common.types import AnalysisResult, AnalysisReport
+                error_result = AnalysisResult(
+                    pattern_name="Input Error",
+                    findings=[],
+                    error="No source code or bytecode found"
+                )
+                analysis_result = AnalysisReport(
+                    analysis_type=AnalysisType.SOURCE_CODE,  # Default
+                    target_hash=source_hash,
+                    contract_name=input_data.get('ContractName', 'Unknown'),
+                    results=[error_result]
+                )
+
+            return self.generate_result(input_data, analysis_result, source_hash)
+
+        else:
+            # Use legacy architecture for compatibility
+            if source_code and source_code.strip():
+                processed_data = self.preprocess_data(input_data)
+                analysis_result = self.analyze_with_contract_analyzer(processed_data['source_code'])
+                analysis_type = "source_code"
+            elif bytecode and bytecode.strip():
+                analysis_result = self.analyze_with_bytecode_analyzer(bytecode)
+                analysis_type = "bytecode"
+            else:
+                analysis_result = {
+                    "error": "No source code or bytecode found",
+                    "summary": {"total_issues": 0, "pattern_counts": {}},
+                    "findings": []
+                }
+                analysis_type = "none"
+
+            result = self.generate_result(input_data, analysis_result, source_hash)
+            result['analysis_type'] = analysis_type
+            return result
 
 def main():
     if len(sys.argv) != 2:
@@ -146,7 +264,8 @@ def main():
 
     processor = TokenDataProcessor()
     try:
-        result = processor.process(input_file)
+        # For now, use legacy mode to ensure patterns work
+        result = processor.process(input_file, use_new_architecture=False)
         print(json.dumps(result, indent=2, ensure_ascii=False))
     except Exception as e:
         print(f"Error processing data: {str(e)}", file=sys.stderr)
