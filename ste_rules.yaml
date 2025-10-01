@@ -1,0 +1,409 @@
+# Token Scam Detection Rules with Scoring System
+# Version: 2.0.0
+# Each rule outputs a score from 0-100 (100 = definitely scam)
+
+version: "2.0.0"
+
+# STE0101: Exit Restriction
+STE0101:
+  name: "Exit Restriction Detection"
+  description: "Detects various mechanisms that prevent users from exiting positions"
+
+  # STE0101.1: Sell-Path Block / Conditional Revert
+  STE0101_1:
+    name: "Sell-Path Block / Conditional Revert"
+    description: "DEX Pair 전송/스왑 등 매도 경로에서만 revert 또는 실패 발생"
+    weight: 1.0
+
+    patterns:
+      # Direct revert on DEX transfers (100 points)
+      dex_revert:
+        regex: |
+          (to|recipient|_to)\s*==\s*.*(pair|router|pool|dex|swap|pancake|uniswap|sushi).*\).*\{[\s\S]{0,100}?(revert|require\s*\(\s*false|return\s+false)
+        score: 100
+        description: "Direct revert when transferring to DEX"
+
+      # Conditional logic targeting DEX addresses (80 points)
+      dex_conditional:
+        regex: |
+          if\s*\(\s*(to|recipient|_to)\s*==\s*.*(pair|router|pool|dex).*\).*\{[\s\S]{0,200}?(require|revert|assert)
+        score: 80
+        description: "Conditional logic specifically for DEX addresses"
+
+      # Asymmetric buy/sell logic (70 points)
+      asymmetric_transfer:
+        regex: |
+          if\s*\(\s*(from|msg\.sender|_from)\s*==\s*.*(pair|router).*\)[\s\S]{0,50}?else\s+if\s*\(\s*(to|recipient|_to)\s*==\s*.*(pair|router)
+        score: 70
+        description: "Different logic for buy vs sell"
+
+      # Sell cooldown/timing restrictions (60 points)
+      sell_timing:
+        regex: |
+          (sellCooldown|lastSell|_sellTime|sellInterval|antiDump).*require.*block\.(timestamp|number)
+        score: 60
+        description: "Time-based sell restrictions"
+
+      # Trading pause capability (50 points)
+      trading_pause:
+        regex: |
+          (tradingEnabled|tradingPaused|canTrade|tradingActive)\s*==\s*false.*require
+        score: 50
+        description: "Ability to pause trading"
+
+      # Max transaction amount for sells only (40 points)
+      sell_limit:
+        regex: |
+          if\s*\(\s*(to|recipient)\s*==.*pair.*\)[\s\S]{0,100}?require\(.*amount\s*<=\s*maxSell
+        score: 40
+        description: "Transaction limits specifically for sells"
+
+    scoring_logic:
+      method: "weighted_max"  # Take highest score with decay for multiple hits
+      decay_factor: 0.2  # Each additional pattern adds 20% of its score
+
+  # STE0101.2: High-Tax / Fee Bomb
+  STE0101_2:
+    name: "High-Tax / Fee Bomb"
+    description: "거래시 과도한 세금(수수료)를 부과해 사실상 출구 봉쇄"
+    weight: 1.0
+
+    patterns:
+      # Extreme fees (>50%) (100 points)
+      extreme_fee:
+        regex: |
+          (fee|tax|commission)\s*[=>]\s*([5-9]\d|[1-9]\d{2,})(?!\s*\/\s*10000)
+        score: 100
+        description: "Fees above 50%"
+
+      # High sell-specific fees (>25%) (90 points)
+      high_sell_fee:
+        regex: |
+          (sellFee|sellTax|exitFee|liquidationFee)\s*[=>]\s*(2[5-9]|[3-9]\d|[1-9]\d{2,})
+        score: 90
+        description: "Sell fees above 25%"
+
+      # Dynamic fee manipulation by owner (80 points)
+      owner_fee_control:
+        regex: |
+          function\s+set.*(Fee|Tax).*\(.*uint.*\).*(?:public|external).*(?:onlyOwner|admin|governance)
+        score: 80
+        description: "Owner can change fees arbitrarily"
+
+      # Fee calculation that can exceed 100% (75 points)
+      uncapped_fee:
+        regex: |
+          (totalFee|sumFee|combinedFee).*\+.*(?!require.*<=\s*100)
+        score: 75
+        description: "No cap on total fees"
+
+      # Different buy/sell fees (60 points)
+      asymmetric_fees:
+        regex: |
+          (buyFee|buyTax)[\s\S]{0,100}?(sellFee|sellTax).*[!=]
+        score: 60
+        description: "Different fees for buying and selling"
+
+      # Hidden fee variables (50 points)
+      hidden_fees:
+        regex: |
+          uint\s+private\s+.*(fee|tax)|_[a-z]{1,3}Fee\s*=\s*\d+
+        score: 50
+        description: "Obfuscated or hidden fee variables"
+
+      # Multiple fee types (40 points)
+      multiple_fees:
+        regex: |
+          (marketingFee.*liquidityFee.*devFee)|(teamFee.*burnFee.*reflectionFee)
+        score: 40
+        description: "Multiple stacking fee types"
+
+    scoring_logic:
+      method: "additive_capped"  # Add scores but cap at 100
+      base_threshold: 10  # Any fee above 10% starts scoring
+
+  # STE0101.3: Blacklist / Whitelist-Gated
+  STE0101_3:
+    name: "Blacklist / Whitelist-Gated"
+    description: "특정 주소만 전송 가능/불가하게 제한하는 로직"
+    weight: 1.0
+
+    patterns:
+      # Blacklist with no removal function (100 points)
+      permanent_blacklist:
+        regex: |
+          mapping.*address.*bool.*blacklist(?![\s\S]*removeFromBlacklist)
+        score: 100
+        description: "Blacklist with no way to remove addresses"
+
+      # Whitelist required for transfers (90 points)
+      whitelist_only:
+        regex: |
+          require\s*\(\s*(whitelist|allowlist|approved)\[.*\].*==.*true.*\).*_transfer
+        score: 90
+        description: "Only whitelisted addresses can transfer"
+
+      # Owner can blacklist anyone (80 points)
+      owner_blacklist:
+        regex: |
+          function\s+(blacklist|ban|block|restrict).*address.*onlyOwner
+        score: 80
+        description: "Owner can blacklist any address"
+
+      # Bot detection that acts as blacklist (70 points)
+      bot_detection:
+        regex: |
+          (isBot|_isBot|botList|antiBot).*mapping.*address.*bool.*require\s*\(!
+        score: 70
+        description: "Anti-bot mechanism that can block transfers"
+
+      # Multiple restriction lists (60 points)
+      multiple_lists:
+        regex: |
+          mapping.*blacklist[\s\S]{0,200}?mapping.*whitelist
+        score: 60
+        description: "Both blacklist and whitelist present"
+
+      # Time-based restrictions (40 points)
+      time_restrictions:
+        regex: |
+          (lockedUntil|frozenUntil|restricted).*\[.*address.*\].*timestamp
+        score: 40
+        description: "Time-based transfer restrictions"
+
+    scoring_logic:
+      method: "weighted_max"
+      penalty_for_no_events: 20  # Add 20 points if no events for list changes
+
+# STE0103: Proxy-Upgrade Rug
+STE0103:
+  name: "Proxy-Upgrade Rug"
+  description: "Upgradable 프록시의 구현 로직 교체로 자금 탈출"
+  weight: 1.0
+
+  patterns:
+    # Upgradeable without timelock (100 points)
+    instant_upgrade:
+      regex: |
+        function\s+(upgrade|setImplementation).*onlyOwner(?!.*timelock|delay|pending)
+      score: 100
+      description: "Owner can upgrade immediately without timelock"
+
+    # Direct implementation change (90 points)
+    direct_implementation:
+      regex: |
+        _implementation\s*=\s*.*(?!require.*timelock)
+      score: 90
+      description: "Direct implementation change without safeguards"
+
+    # Proxy with selfdestruct capability (85 points)
+    proxy_selfdestruct:
+      regex: |
+        (?:proxy|upgradeable|delegate)[\s\S]{0,500}?selfdestruct
+      score: 85
+      description: "Upgradeable proxy with selfdestruct"
+
+    # No upgrade event emission (80 points)
+    no_upgrade_event:
+      regex: |
+        function\s+upgrade(?![\s\S]{0,200}?emit\s+Upgrad)
+      score: 80
+      description: "Upgrade function doesn't emit events"
+
+    # Unchecked delegatecall (75 points)
+    unchecked_delegatecall:
+      regex: |
+        \.delegatecall\((?!.*require.*success)
+      score: 75
+      description: "Delegatecall without success check"
+
+    # Multiple upgrade paths (70 points)
+    multiple_upgrade_paths:
+      regex: |
+        function\s+upgrade[\s\S]{0,500}?function\s+emergencyUpgrade
+      score: 70
+      description: "Multiple upgrade mechanisms"
+
+    # Storage collision risk (60 points)
+    storage_collision:
+      regex: |
+        assembly\s*\{[\s\S]{0,200}?sstore\(0x[0-9a-f]+
+      score: 60
+      description: "Direct storage manipulation in upgradeable"
+
+    # Beacon proxy pattern (40 points)
+    beacon_proxy:
+      regex: |
+        (beacon|Beacon)\s+.*\s+(proxy|Proxy)
+      score: 40
+      description: "Beacon proxy pattern (centralized upgrades)"
+
+  scoring_logic:
+    method: "risk_accumulation"  # Accumulate risks with diminishing returns
+    base_score: 20  # Start at 20 if upgradeable at all
+    max_score: 100
+
+# STE0104: Unlimited-Mint
+STE0104:
+  name: "Unlimited-Mint"
+  description: "민팅 권한으로 공급을 무제한 확대하고 시장 희석"
+  weight: 1.0
+
+  patterns:
+    # Mint with no cap (100 points)
+    uncapped_mint:
+      regex: |
+        function\s+(mint|_mint|issue)(?![\s\S]{0,200}?(maxSupply|MAX_SUPPLY|totalSupply\s*<=|totalSupply\s*\+.*<=))
+      score: 100
+      description: "Mint function with no maximum supply check"
+
+    # Owner can mint anytime (90 points)
+    owner_mint_anytime:
+      regex: |
+        function\s+mint.*onlyOwner.*\{[\s\S]{0,100}?(_mint|totalSupply\s*\+=|_balances\[.*\]\s*\+=)
+      score: 90
+      description: "Owner can mint tokens without restrictions"
+
+    # Hidden mint function (85 points)
+    hidden_mint:
+      regex: |
+        function\s+(?!mint|_mint|issue)[a-zA-Z_]+\s*\(.*uint.*\)[\s\S]{0,200}?totalSupply\s*\+=
+      score: 85
+      description: "Hidden function that increases supply"
+
+    # Modifiable max supply (80 points)
+    mutable_max_supply:
+      regex: |
+        (maxSupply|MAX_SUPPLY|supplyCap)(?!.*constant|immutable).*=(?!.*constructor)
+      score: 80
+      description: "Maximum supply can be changed"
+
+    # Multiple mint functions (75 points)
+    multiple_mints:
+      regex: |
+        function\s+mint[\s\S]{0,500}?function\s+(emergencyMint|adminMint|devMint)
+      score: 75
+      description: "Multiple minting mechanisms"
+
+    # Mint in transfer function (70 points)
+    mint_in_transfer:
+      regex: |
+        function\s+(_transfer|transfer|transferFrom)[\s\S]{0,300}?totalSupply\s*\+=
+      score: 70
+      description: "Supply increases during transfers"
+
+    # Rebase mechanism (60 points)
+    rebase:
+      regex: |
+        (rebase|Rebase|_rebase).*function.*totalSupply
+      score: 60
+      description: "Rebase mechanism that changes supply"
+
+    # No burn to counteract (40 points)
+    no_burn:
+      regex: |
+        function\s+mint(?![\s\S]*function\s+burn)
+      score: 40
+      description: "Mint exists but no burn function"
+
+  scoring_logic:
+    method: "severity_based"
+    multiplier_if_no_events: 1.2  # 20% increase if no mint events
+
+# STE0105: External Deposit Sink (ETH Push Trap)
+STE0105:
+  name: "External Deposit Sink"
+  description: "ETH/Token을 넣게 유인하지만 출금은 owner만 가능"
+  weight: 1.0
+
+  patterns:
+    # Receive ETH but no withdraw (100 points)
+    eth_trap_no_withdraw:
+      regex: |
+        (receive|fallback)\s*\(\s*\)\s*external\s+payable(?![\s\S]*function\s+(withdraw|claim|refund|retrieve))
+      score: 100
+      description: "Can receive ETH but no withdraw function"
+
+    # Owner-only withdraw (95 points)
+    owner_only_withdraw:
+      regex: |
+        function\s+(withdraw|claim|emergency|rescue).*onlyOwner[\s\S]{0,200}?(transfer|call\{value|send)
+      score: 95
+      description: "Only owner can withdraw funds"
+
+    # Deposit mapping but no user claim (90 points)
+    deposit_no_claim:
+      regex: |
+        mapping\s*\(.*address.*uint.*\)\s*.*(deposit|balance|contribution)(?![\s\S]*function\s+(withdraw|claim).*msg\.sender)
+      score: 90
+      description: "Tracks deposits but no user withdrawal"
+
+    # Investment/staking trap (85 points)
+    investment_trap:
+      regex: |
+        function\s+(invest|stake|deposit|contribute).*payable(?![\s\S]{0,500}?function\s+(unstake|withdraw).*msg\.sender)
+      score: 85
+      description: "Investment function without user withdrawal"
+
+    # Asymmetric deposit/withdraw conditions (80 points)
+    asymmetric_conditions:
+      regex: |
+        function\s+deposit.*\{[\s\S]{0,200}?function\s+withdraw.*require\(.*owner
+      score: 80
+      description: "Different conditions for deposit and withdraw"
+
+    # Hidden balance variable (70 points)
+    hidden_balance:
+      regex: |
+        uint\s+private\s+.*balance|mapping.*private.*balance
+      score: 70
+      description: "Private balance tracking"
+
+    # No refund mechanism (60 points)
+    no_refund:
+      regex: |
+        payable(?![\s\S]*(refund|Refund|return.*value|msg\.sender\.transfer))
+      score: 60
+      description: "Accepts payments but no refund mechanism"
+
+    # Misleading function names (50 points)
+    misleading_names:
+      regex: |
+        function\s+(claimReward|getRefund|withdrawProfit).*onlyOwner
+      score: 50
+      description: "Misleading function names with owner-only access"
+
+  scoring_logic:
+    method: "risk_weighted"
+    base_score: 30  # Any payable without clear withdraw is suspicious
+
+# Global scoring configuration
+scoring_config:
+  aggregation_method: "independent"  # Each STE scored independently
+  score_range:
+    min: 0
+    max: 100
+  interpretation:
+    0-20: "LOW_RISK"      # Likely safe
+    21-40: "MEDIUM_RISK"  # Some concerns
+    41-60: "HIGH_RISK"    # Significant red flags
+    61-80: "VERY_HIGH_RISK"  # Multiple scam indicators
+    81-100: "CRITICAL_RISK"  # Definitely scam
+
+# Analysis configuration
+analysis_config:
+  preprocessing:
+    remove_comments: true
+    normalize_whitespace: true
+    case_sensitive: false
+
+  pattern_matching:
+    multiline: true
+    dot_matches_newline: true
+    timeout_ms: 5000
+
+  reporting:
+    include_matched_code: true
+    max_snippet_length: 200
+    include_line_numbers: true
+    verbose: false

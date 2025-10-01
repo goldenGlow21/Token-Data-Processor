@@ -1,28 +1,22 @@
 """
-Base interfaces for analyzers and patterns
+Common interfaces for analyzers and patterns
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Any
-from .types import Finding, AnalysisResult, AnalysisReport
+from typing import Dict, Any, List
+from .types import AnalysisReport, Finding
 
 
 class BasePattern(ABC):
-    """Base class for all analysis patterns"""
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """Pattern name"""
-        pass
+    """Base class for detection patterns"""
 
     @abstractmethod
-    def analyze(self, target: Any) -> List[Finding]:
+    def detect(self, data: str) -> List[Finding]:
         """
-        Analyze target and return findings
+        Detect pattern in given data
 
         Args:
-            target: The target to analyze (source code, bytecode, etc.)
+            data: Data to analyze (bytecode, source code, etc.)
 
         Returns:
             List of findings
@@ -31,7 +25,7 @@ class BasePattern(ABC):
 
 
 class BaseAnalyzer(ABC):
-    """Base class for all analyzers"""
+    """Base class for analyzers"""
 
     def __init__(self):
         self.patterns: List[BasePattern] = []
@@ -39,54 +33,19 @@ class BaseAnalyzer(ABC):
 
     @abstractmethod
     def _register_patterns(self) -> None:
-        """Register analysis patterns"""
+        """Register patterns to be used in analysis"""
         pass
 
     @abstractmethod
-    def analyze(self, target: Any, **kwargs) -> AnalysisReport:
+    def analyze(self, data: str, **kwargs) -> AnalysisReport:
         """
-        Analyze target and generate report
+        Analyze given data
 
         Args:
-            target: The target to analyze
+            data: Data to analyze
             **kwargs: Additional parameters
 
         Returns:
             Analysis report
         """
         pass
-
-    def _run_pattern_analysis(self, pattern: BasePattern, target: Any) -> AnalysisResult:
-        """
-        Run a single pattern analysis with error handling
-
-        Args:
-            pattern: Pattern to run
-            target: Target to analyze
-
-        Returns:
-            Analysis result
-        """
-        import time
-
-        start_time = time.time()
-
-        try:
-            findings = pattern.analyze(target)
-            execution_time = time.time() - start_time
-
-            return AnalysisResult(
-                pattern_name=pattern.name,
-                findings=findings,
-                execution_time=execution_time
-            )
-
-        except Exception as e:
-            execution_time = time.time() - start_time
-
-            return AnalysisResult(
-                pattern_name=pattern.name,
-                findings=[],
-                execution_time=execution_time,
-                error=str(e)
-            )

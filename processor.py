@@ -1,275 +1,260 @@
 #!/usr/bin/env python3
+"""
+Main Token Analysis Processor
+토큰 스캠 통합 분석 시스템
+
+바이트코드와 소스코드를 모두 분석하여 종합 리포트를 생성합니다.
+"""
+
 import json
+import time
 import sys
-import hashlib
 import os
-import subprocess
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, Any, Optional
+from datetime import datetime
 
-from common.types import AnalysisReport, AnalysisType
+from bytecode_analyzer.bytecode_analyzer import BytecodeAnalyzer
+from contractcode_analyzer.contract_code_analyzer import ContractCodeAnalyzer
 
 
-class TokenDataProcessor:
-    """Main processor for token data analysis"""
+class TokenAnalysisProcessor:
+    """Main processor that coordinates bytecode and source code analysis"""
 
     def __init__(self):
-        pass
+        self.bytecode_analyzer = BytecodeAnalyzer()
+        self.contractcode_analyzer = ContractCodeAnalyzer()
 
-    def load_input_data(self, input_file: str) -> Dict[str, Any]:
-        """Load and parse the input JSON file"""
-        with open(input_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
-
-    def calculate_source_hash(self, source_code: str) -> str:
-        """Calculate SHA256 hash of source code"""
-        return hashlib.sha256(source_code.encode('utf-8')).hexdigest()
-
-    def preprocess_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Preprocess data for STE category detection model"""
-        processed = {
-            'source_code': data.get('SourceCode', ''),
-            'contract_name': data.get('ContractName', ''),
-            'compiler_version': data.get('CompilerVersion', ''),
-            'optimization_used': data.get('OptimizationUsed', '0') == '1',
-            'runs': int(data.get('Runs', '0')),
-            'license_type': data.get('LicenseType', ''),
-            'proxy_status': data.get('Proxy', '0') == '1'
-        }
-        return processed
-
-    def _get_analyzer(self, analysis_type: AnalysisType):
-        """Get appropriate analyzer based on analysis type"""
-        if analysis_type == AnalysisType.SOURCE_CODE:
-            from contract_analyzer.contract_analyzer import ContractAnalyzer
-            return ContractAnalyzer()
-        elif analysis_type == AnalysisType.BYTECODE:
-            from bytecode_analyzer.bytecode_analyzer import BytecodeAnalyzer
-            return BytecodeAnalyzer()
-        else:
-            raise ValueError(f"Unsupported analysis type: {analysis_type}")
-
-    def analyze_with_contract_analyzer(self, source_code: str) -> Dict[str, Any]:
-        """Legacy method for backward compatibility"""
-        try:
-            analyzer = self._get_analyzer(AnalysisType.SOURCE_CODE)
-            return analyzer.analyze_contract(source_code)
-        except Exception as e:
-            return {"error": str(e), "summary": {"total_issues": 0, "pattern_counts": {}}, "findings": []}
-
-    def analyze_with_bytecode_analyzer(self, bytecode: str) -> Dict[str, Any]:
-        """Legacy method for backward compatibility"""
-        try:
-            analyzer = self._get_analyzer(AnalysisType.BYTECODE)
-            return analyzer.analyze_bytecode(bytecode)
-        except Exception as e:
-            return {"error": str(e), "summary": {"total_issues": 0, "pattern_counts": {}}, "findings": []}
-
-    def analyze(self, content: str, analysis_type: AnalysisType, **kwargs) -> AnalysisReport:
+    def analyze_from_json(self, json_file_path: str) -> Dict[str, Any]:
         """
-        Unified analysis method using the new architecture
+        Analyze token from JSON file containing contract data
 
-        Args:
-            content: Source code or bytecode to analyze
-            analysis_type: Type of analysis to perform
-            **kwargs: Additional parameters
-
-        Returns:
-            Analysis report
-        """
-        try:
-            analyzer = self._get_analyzer(analysis_type)
-            return analyzer.analyze(content, **kwargs)
-        except Exception as e:
-            # Return error report
-            from common.types import AnalysisResult, AnalysisReport
-            error_result = AnalysisResult(
-                pattern_name="Analysis Error",
-                findings=[],
-                error=str(e)
-            )
-            return AnalysisReport(
-                analysis_type=analysis_type,
-                target_hash=hashlib.sha256(content.encode('utf-8')).hexdigest(),
-                contract_name=kwargs.get('contract_name', 'Unknown'),
-                results=[error_result]
-            )
-
-    def calculate_risk_score(self, analysis_result: Dict[str, Any]) -> int:
-        """Calculate risk score based on pattern occurrences with weight coefficients"""
-        if 'summary' not in analysis_result:
-            return 100
-
-        pattern_counts = analysis_result['summary'].get('pattern_counts', {})
-
-        # Pattern weight coefficients based on maliciousness likelihood
-        pattern_weights = {
-            # Definitely malicious patterns (high coefficient)
-            'Direct Balance Assignment': 20.0,     # 직접 잔액 조작 = 확실한 스캠
-            'Balance Manipulation': 18.0,          # 잔액 조작 = 확실한 스캠
-            'Asymmetric Fee Structure': 15.0,      # 비대칭 수수료 = 허니팟 특성
-
-            # Very suspicious patterns (medium-high coefficient)
-            'Reentrancy Vulnerability': 10.0,      # 재진입 공격 취약점
-
-            # Could be legitimate but concerning (medium coefficient)
-            'Approve Function Manipulation': 3.0,  # approve 보안 조치 (정상일 수도)
-            'Hidden Minting': 2.0,                 # 숨겨진 민팅 (중앙화 토큰에선 가능)
-            'Unlimited Token Issuance': 2.0,       # 무제한 발행 (중앙화 토큰에선 가능)
-            'Sell-Path Block': 1.5,                # 매도 차단 (블랙리스트일 수도)
-
-            # Administrative features (very low coefficient)
-            'Contract Pause Abuse': 1.0,           # 컨트랙트 일시정지 (정상 기능일 수 있음)
-            'Pausable Exit Block': 0.8,            # 일시정지로 인한 차단
-            'Total Supply Manipulation': 0.5,      # 총 공급량 조작 (정상적일 수 있음)
-            'Owner Pause Bypass': 0.3,             # 오너 우회 권한
-            'Permanent Owner Control': 0.2,        # 영구 오너십 (일반적)
-            'Execution Order Dependency': 0.1,     # 실행 순서 의존성 (일반적)
-            'Missing Event': 0.1                   # 이벤트 누락 (코딩 실수)
+        Expected JSON format:
+        {
+            "contractName": "TokenName",
+            "contractAddress": "0x...",
+            "sourceCode": "contract ... { ... }",
+            "bytecode": "0x..."
         }
 
-        # Base score starts at 100
-        score = 100
-        total_weighted_issues = 0
-
-        for pattern_name, count in pattern_counts.items():
-            if pattern_name in pattern_weights and count > 0:
-                # Only check if pattern exists, ignore count
-                weight = pattern_weights[pattern_name]
-                total_weighted_issues += weight
-
-        # Convert weighted issues to score deduction
-        # More balanced scaling to allow proper differentiation
-        if total_weighted_issues > 0:
-            # Much gentler for low-weight administrative patterns
-            if total_weighted_issues <= 5:  # Administrative features
-                score_deduction = total_weighted_issues * 3
-            elif total_weighted_issues <= 15: # Mixed patterns
-                score_deduction = 15 + (total_weighted_issues - 5) * 2
-            else: # High malicious patterns
-                score_deduction = 35 + (total_weighted_issues - 15) * 3
-
-            score_deduction = min(80, score_deduction)
-            score = int(score - score_deduction)
-
-        return max(0, score)
-
-    def generate_result(self, input_data: Dict[str, Any], analysis_result: Union[Dict[str, Any], AnalysisReport],
-                       source_hash: str) -> Dict[str, Any]:
-        """Generate final JSON result"""
-        if isinstance(analysis_result, AnalysisReport):
-            # New format - use built-in risk scoring
-            return analysis_result.to_dict()
-        else:
-            # Legacy format
-            return {
-                'category': 'STE',
-                'analysis_score': self.calculate_risk_score(analysis_result),
-                'source_hash': source_hash,
-                'contract_name': input_data.get('ContractName', 'Unknown'),
-                'analyzer_result': analysis_result
-            }
-
-    def process(self, input_file: str, use_new_architecture: bool = True) -> Dict[str, Any]:
-        """
-        Main processing function
-
         Args:
-            input_file: Path to input JSON file
-            use_new_architecture: Whether to use new unified architecture
+            json_file_path: Path to JSON file
 
         Returns:
-            Analysis result dictionary
+            Complete analysis report
         """
-        # Load input data
-        input_data = self.load_input_data(input_file)
+        start_time = time.time()
 
-        # Check if input contains source code or bytecode
-        source_code = input_data.get('SourceCode', '')
-        bytecode = input_data.get('Bytecode', '')
+        # Load JSON data
+        with open(json_file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
 
-        # Calculate hash (use source code if available, otherwise bytecode)
-        content_for_hash = source_code if source_code else bytecode
-        source_hash = self.calculate_source_hash(content_for_hash)
+        # Support multiple JSON formats
+        contract_name = data.get('ContractName') or data.get('contractName', 'Unknown')
+        contract_address = data.get('contractAddress', 'N/A')
+        source_code = data.get('SourceCode') or data.get('sourceCode', '')
+        bytecode = data.get('Bytecode') or data.get('bytecode', '')
 
-        if use_new_architecture:
-            # Use new unified architecture
-            if source_code and source_code.strip():
-                # Use contract analyzer for source code
-                processed_data = self.preprocess_data(input_data)
-                contract_name = input_data.get('ContractName', 'Unknown')
+        print(f"Analyzing contract: {contract_name} ({contract_address})")
+        print("=" * 80)
 
-                analysis_result = self.analyze(
-                    processed_data['source_code'],
-                    AnalysisType.SOURCE_CODE,
-                    contract_name=contract_name
-                )
-            elif bytecode and bytecode.strip():
-                # Use bytecode analyzer for bytecode
-                contract_name = input_data.get('ContractName', 'Unknown')
-
-                analysis_result = self.analyze(
-                    bytecode,
-                    AnalysisType.BYTECODE,
-                    contract_name=contract_name
-                )
-            else:
-                # No valid input found - create error report
-                from common.types import AnalysisResult, AnalysisReport
-                error_result = AnalysisResult(
-                    pattern_name="Input Error",
-                    findings=[],
-                    error="No source code or bytecode found"
-                )
-                analysis_result = AnalysisReport(
-                    analysis_type=AnalysisType.SOURCE_CODE,  # Default
-                    target_hash=source_hash,
-                    contract_name=input_data.get('ContractName', 'Unknown'),
-                    results=[error_result]
-                )
-
-            return self.generate_result(input_data, analysis_result, source_hash)
-
+        # Analyze source code
+        print("Running source code analysis...")
+        sourcecode_report = None
+        if source_code:
+            try:
+                sourcecode_report = self.contractcode_analyzer.analyze(source_code, contract_name)
+                print(f"✓ Source code analysis completed (Score: {sourcecode_report['overall_score']}/100)")
+            except Exception as e:
+                print(f"✗ Source code analysis failed: {e}")
+                sourcecode_report = {"error": str(e)}
         else:
-            # Use legacy architecture for compatibility
-            if source_code and source_code.strip():
-                processed_data = self.preprocess_data(input_data)
-                analysis_result = self.analyze_with_contract_analyzer(processed_data['source_code'])
-                analysis_type = "source_code"
-            elif bytecode and bytecode.strip():
-                analysis_result = self.analyze_with_bytecode_analyzer(bytecode)
-                analysis_type = "bytecode"
-            else:
-                analysis_result = {
-                    "error": "No source code or bytecode found",
-                    "summary": {"total_issues": 0, "pattern_counts": {}},
-                    "findings": []
-                }
-                analysis_type = "none"
+            print("⚠ No source code available")
 
-            result = self.generate_result(input_data, analysis_result, source_hash)
-            result['analysis_type'] = analysis_type
-            return result
+        # Analyze bytecode
+        print("Running bytecode analysis...")
+        bytecode_report = None
+        if bytecode:
+            try:
+                bytecode_report = self.bytecode_analyzer.analyze(bytecode, contract_name=contract_name)
+                print(f"✓ Bytecode analysis completed")
+            except Exception as e:
+                print(f"✗ Bytecode analysis failed: {e}")
+                bytecode_report = {"error": str(e)}
+        else:
+            print("⚠ No bytecode available")
+
+        # Calculate overall risk assessment
+        overall_assessment = self._calculate_overall_assessment(sourcecode_report, bytecode_report)
+
+        # Build complete report
+        total_time = time.time() - start_time
+
+        complete_report = {
+            "metadata": {
+                "contract_name": contract_name,
+                "contract_address": contract_address,
+                "analysis_timestamp": time.time(),
+                "total_execution_time": total_time
+            },
+            "source_code_analysis": sourcecode_report,
+            "bytecode_analysis": bytecode_report,
+            "overall_assessment": overall_assessment
+        }
+
+        print(f"\nTotal analysis time: {total_time:.3f}s")
+        print("=" * 80)
+
+        return complete_report
+
+    def _calculate_overall_assessment(
+        self,
+        sourcecode_report: Optional[Dict[str, Any]],
+        bytecode_report: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Calculate overall risk assessment from both analyses"""
+
+        # Get source code score
+        source_score = 0
+        if sourcecode_report and 'overall_score' in sourcecode_report:
+            source_score = sourcecode_report['overall_score']
+
+        # For now, bytecode analysis is structural only
+        # We'll weight source code analysis more heavily
+        final_score = source_score
+
+        # Determine risk level
+        if final_score >= 80:
+            risk_level = "CRITICAL_RISK"
+            verdict = "🚨 SCAM - DO NOT INVEST"
+        elif final_score >= 60:
+            risk_level = "VERY_HIGH_RISK"
+            verdict = "⚠️ HIGHLY SUSPICIOUS - AVOID"
+        elif final_score >= 40:
+            risk_level = "HIGH_RISK"
+            verdict = "⚠️ RISKY - PROCEED WITH CAUTION"
+        elif final_score >= 20:
+            risk_level = "MEDIUM_RISK"
+            verdict = "ℹ️ SOME CONCERNS - INVESTIGATE FURTHER"
+        else:
+            risk_level = "LOW_RISK"
+            verdict = "✓ APPEARS SAFE - STANDARD PATTERNS"
+
+        assessment = {
+            "final_score": round(final_score, 2),
+            "risk_level": risk_level,
+            "verdict": verdict,
+            "recommendations": self._generate_recommendations(sourcecode_report)
+        }
+
+        return assessment
+
+    def _generate_recommendations(self, sourcecode_report: Optional[Dict[str, Any]]) -> list:
+        """Generate recommendations based on analysis results"""
+        recommendations = []
+
+        if not sourcecode_report or 'ste_results' not in sourcecode_report:
+            return ["Unable to generate recommendations - analysis incomplete"]
+
+        # Check each STE result
+        for ste in sourcecode_report.get('ste_results', []):
+            score = ste.get('score', 0)
+            ste_id = ste.get('ste_id', '')
+
+            if score >= 80:
+                if 'STE0101' in ste_id:
+                    recommendations.append("🚫 Exit restrictions detected - users may not be able to sell")
+                elif 'STE0103' in ste_id:
+                    recommendations.append("🚫 Upgradeable contract - owner can change logic at any time")
+                elif 'STE0104' in ste_id:
+                    recommendations.append("🚫 Unlimited minting capability - supply can be inflated")
+                elif 'STE0105' in ste_id:
+                    recommendations.append("🚫 Deposit trap detected - funds may be locked")
+
+        if not recommendations:
+            recommendations.append("✓ No critical scam patterns detected")
+            recommendations.append("ℹ️ Always DYOR (Do Your Own Research)")
+
+        return recommendations
+
+    def save_report(self, report: Dict[str, Any], output_path: str) -> None:
+        """Save analysis report to JSON file"""
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+        print(f"Report saved to: {output_path}")
+
+    def print_summary(self, report: Dict[str, Any]) -> None:
+        """Print summary of analysis report"""
+        print("\n" + "=" * 80)
+        print("ANALYSIS SUMMARY")
+        print("=" * 80)
+
+        metadata = report.get('metadata', {})
+        print(f"Contract: {metadata.get('contract_name', 'N/A')}")
+        print(f"Address: {metadata.get('contract_address', 'N/A')}")
+        print(f"Analysis Time: {metadata.get('total_execution_time', 0):.3f}s")
+        print()
+
+        assessment = report.get('overall_assessment', {})
+        print(f"FINAL SCORE: {assessment.get('final_score', 0)}/100")
+        print(f"RISK LEVEL: {assessment.get('risk_level', 'N/A')}")
+        print(f"VERDICT: {assessment.get('verdict', 'N/A')}")
+        print()
+
+        print("RECOMMENDATIONS:")
+        for rec in assessment.get('recommendations', []):
+            print(f"  {rec}")
+
+        print("=" * 80)
+
+        # Print detailed source code analysis if available
+        sourcecode_report = report.get('source_code_analysis')
+        if sourcecode_report and 'ste_results' in sourcecode_report:
+            print("\nDETAILED SOURCE CODE ANALYSIS:")
+            self.contractcode_analyzer.print_report(sourcecode_report)
+
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python3 processor.py <output.json>")
+    """Main entry point"""
+    if len(sys.argv) < 2:
+        print("Usage: python main_processor.py <contract_data.json> [output.json]")
+        print("\nExpected JSON format:")
+        print('''{
+  "contractName": "TokenName",
+  "contractAddress": "0x...",
+  "sourceCode": "contract ... { ... }",
+  "bytecode": "0x..."
+}''')
         sys.exit(1)
 
     input_file = sys.argv[1]
+    output_file = sys.argv[2] if len(sys.argv) > 2 else None
 
-    if not os.path.exists(input_file):
-        print(f"Error: Input file '{input_file}' not found")
+    # Check if input file exists
+    if not Path(input_file).exists():
+        print(f"Error: File not found: {input_file}")
         sys.exit(1)
 
-    processor = TokenDataProcessor()
-    try:
-        # For now, use legacy mode to ensure patterns work
-        result = processor.process(input_file, use_new_architecture=False)
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-    except Exception as e:
-        print(f"Error processing data: {str(e)}", file=sys.stderr)
-        sys.exit(1)
+    # Run analysis
+    processor = TokenAnalysisProcessor()
+    report = processor.analyze_from_json(input_file)
+
+    # Print summary
+    processor.print_summary(report)
+
+    # Save report
+    if not output_file:
+        # Create results directory if not exists
+        results_dir = Path("results")
+        results_dir.mkdir(exist_ok=True)
+
+        # Generate filename with contract name and timestamp
+        contract_name = report['metadata'].get('contract_name', 'Unknown')
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = results_dir / f"{contract_name}_{timestamp}.json"
+
+    processor.save_report(report, str(output_file))
+
 
 if __name__ == "__main__":
     main()

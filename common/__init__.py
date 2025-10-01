@@ -1,11 +1,16 @@
 """
-Common types and interfaces for the Ethereum Analysis System
+Common types and interfaces for token analysis
 """
 
-from .types import Finding, AnalysisResult, AnalysisReport, Severity
+from .types import Finding, AnalysisResult, AnalysisReport, Severity, AnalysisType
 from .interfaces import BaseAnalyzer, BasePattern
 
 __all__ = [
-    'Finding', 'AnalysisResult', 'AnalysisReport', 'Severity',
-    'BaseAnalyzer', 'BasePattern'
+    'Finding',
+    'AnalysisResult',
+    'AnalysisReport',
+    'Severity',
+    'AnalysisType',
+    'BaseAnalyzer',
+    'BasePattern'
 ]
