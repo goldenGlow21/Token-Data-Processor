@@ -45,19 +45,30 @@ class ContractCodeAnalyzer:
             (81, 100): "CRITICAL_RISK"
         }
 
-    def _preprocess_code(self, contract_code: str) -> str:
-        """Preprocess contract code for analysis"""
-        # Remove comments
+    def _preprocess_code(self, contract_code: str) -> tuple:
+        """Preprocess contract code for analysis and create position mapping"""
         import re
+
+        # Create position mapping from preprocessed to original
+        position_map = []  # List of (preprocessed_pos, original_pos) tuples
+
         # Remove single line comments
-        code = re.sub(r'//.*?$', '', contract_code, flags=re.MULTILINE)
+        code = contract_code
+        for match in re.finditer(r'//.*?$', code, flags=re.MULTILINE):
+            position_map.append((match.start(), match.start(), match.end()))
+        code = re.sub(r'//.*?$', '', code, flags=re.MULTILINE)
+
         # Remove multi-line comments
-        code = re.sub(r'/\*.*?\*/', '', code, flags=re.DOTALL)
+        comment_removals = []
+        for match in re.finditer(r'/\*.*?\*/', contract_code, flags=re.DOTALL):
+            comment_removals.append((match.start(), match.end()))
 
-        # Don't normalize whitespace - keep line breaks for accurate line numbers
-        # code = re.sub(r'\s+', ' ', code)
+        # Build mapping: for each position in preprocessed code, what's the position in original?
+        # Simple approach: just return both codes and calculate line numbers directly from original
+        code = re.sub(r'/\*.*?\*/', '', contract_code, flags=re.DOTALL)
+        code = re.sub(r'//.*?$', '', code, flags=re.MULTILINE)
 
-        return code
+        return code, contract_code  # Return preprocessed and original
 
     def _get_risk_level(self, score: float) -> str:
         """Get risk level based on score"""
@@ -83,7 +94,7 @@ class ContractCodeAnalyzer:
         code_hash = hashlib.sha256(contract_code.encode('utf-8')).hexdigest()
 
         # Preprocess code
-        preprocessed_code = self._preprocess_code(contract_code)
+        preprocessed_code, original_code = self._preprocess_code(contract_code)
 
         # Run all analyzers
         results = []
@@ -92,7 +103,8 @@ class ContractCodeAnalyzer:
 
         for analyzer in self.analyzers:
             try:
-                result = analyzer.analyze(preprocessed_code)
+                # Pass both preprocessed code and original code for line number calculation
+                result = analyzer.analyze(preprocessed_code, original_code=original_code)
                 results.append(result)
 
                 # Track scores

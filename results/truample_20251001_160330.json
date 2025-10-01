@@ -2,14 +2,14 @@
   "metadata": {
     "contract_name": "truample",
     "contract_address": "N/A",
-    "analysis_timestamp": 1759297328.3278036,
-    "total_execution_time": 0.012467145919799805
+    "analysis_timestamp": 1759302210.1094418,
+    "total_execution_time": 0.011460304260253906
   },
   "source_code_analysis": {
     "contract_name": "truample",
     "code_hash": "3f9c868ebfb3cfb33135415999b736ef29df245504eb19b72442e1781cb614f8",
-    "analysis_timestamp": 1759297328.3275454,
-    "execution_time": 0.01191258430480957,
+    "analysis_timestamp": 1759302210.109381,
+    "execution_time": 0.011282920837402344,
     "overall_score": 66.67,
     "overall_risk": "VERY_HIGH_RISK",
     "max_individual_score": 100,
@@ -60,22 +60,22 @@
             "pattern_name": "deposit_no_claim",
             "score": 90,
             "description": "Tracks deposits but no user withdrawal",
-            "matched_text": "mapping (address => uint256) balances;\r\n    mapping (address => mapping (address => uint256)) allowed;\r\n    \r\n    function balanceOf(address owner) public view returns (uint256 balance) {\r\n        ret",
-            "line_number": 53
+            "matched_text": "    mapping (address => uint256) balances;",
+            "line_number": 37
           },
           {
             "pattern_name": "no_refund",
             "score": 60,
             "description": "Accepts payments but no refund mechanism",
-            "matched_text": "payable",
-            "line_number": 133
+            "matched_text": "     function () external payable {",
+            "line_number": 77
           },
           {
             "pattern_name": "no_refund",
             "score": 60,
             "description": "Accepts payments but no refund mechanism",
-            "matched_text": "payable",
-            "line_number": 141
+            "matched_text": "    constructor () public payable {",
+            "line_number": 81
           }
         ]
       }
@@ -93,22 +93,22 @@
               "pattern_name": "deposit_no_claim",
               "score": 90,
               "description": "Tracks deposits but no user withdrawal",
-              "matched_text": "mapping (address => uint256) balances;\r\n    mapping (address => mapping (address => uint256)) allowed;\r\n    \r\n    function balanceOf(address owner) public view returns (uint256 balance) {\r\n        ret",
-              "line_number": 53
+              "matched_text": "    mapping (address => uint256) balances;",
+              "line_number": 37
             },
             {
               "pattern_name": "no_refund",
               "score": 60,
               "description": "Accepts payments but no refund mechanism",
-              "matched_text": "payable",
-              "line_number": 133
+              "matched_text": "     function () external payable {",
+              "line_number": 77
             },
             {
               "pattern_name": "no_refund",
               "score": 60,
               "description": "Accepts payments but no refund mechanism",
-              "matched_text": "payable",
-              "line_number": 141
+              "matched_text": "    constructor () public payable {",
+              "line_number": 81
             }
           ]
         }

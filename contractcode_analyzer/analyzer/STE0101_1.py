@@ -52,9 +52,12 @@ class STE0101_1_Analyzer:
             "decay_factor": 0.2
         }
 
-    def analyze(self, contract_code: str) -> Dict[str, Any]:
+    def analyze(self, contract_code: str, original_code: str = None) -> Dict[str, Any]:
         """Analyze contract code for STE0101.1 patterns"""
         matches = []
+
+        # Use original code for line number calculation if provided
+        code_for_line_numbers = original_code if original_code else contract_code
 
         # Find all pattern matches
         for pattern_name, pattern_config in self.patterns.items():
@@ -67,12 +70,47 @@ class STE0101_1_Analyzer:
                 flags = re.MULTILINE | re.DOTALL | re.IGNORECASE
 
                 for match in re.finditer(regex_pattern, contract_code, flags):
-                    # Calculate line number (handle both \n and \r\n)
-                    text_before_match = contract_code[:match.start()]
-                    line_number = text_before_match.count('\n') + text_before_match.count('\r\n') + 1
+                    # Get matched text and position in preprocessed code
+                    full_match = match.group(0)
+                    match_start = match.start()
+                    match_end = match.end()
 
-                    # Get matched text (limited)
-                    matched_text = match.group(0)[:200]
+                    # Include context before and after for unique matching
+                    context_before = contract_code[max(0, match_start-30):match_start]
+                    context_after = contract_code[match_end:min(len(contract_code), match_end+30)]
+                    search_with_context = context_before + full_match[:100] + context_after
+
+                    # Find in original code with context
+                    original_match_pos = code_for_line_numbers.find(search_with_context)
+
+                    if original_match_pos != -1:
+                        # Adjust for the context_before length
+                        actual_pos = original_match_pos + len(context_before)
+                        text_before_match = code_for_line_numbers[:actual_pos]
+                        line_number = text_before_match.count('\r\n') + 1
+
+                        # Extract the full line(s) from original code for matched_text
+                        line_start = code_for_line_numbers.rfind('\r\n', 0, actual_pos)
+                        line_start = line_start + 2 if line_start != -1 else 0
+                        line_end = code_for_line_numbers.find('\r\n', actual_pos)
+                        line_end = line_end if line_end != -1 else len(code_for_line_numbers)
+                        matched_text = code_for_line_numbers[line_start:line_end][:200]
+                    else:
+                        # Fallback: try without context
+                        original_match_pos = code_for_line_numbers.find(full_match[:100])
+                        if original_match_pos != -1:
+                            text_before_match = code_for_line_numbers[:original_match_pos]
+                            line_number = text_before_match.count('\r\n') + 1
+
+                            # Extract the full line(s) from original code
+                            line_start = code_for_line_numbers.rfind('\r\n', 0, original_match_pos)
+                            line_start = line_start + 2 if line_start != -1 else 0
+                            line_end = code_for_line_numbers.find('\r\n', original_match_pos)
+                            line_end = line_end if line_end != -1 else len(code_for_line_numbers)
+                            matched_text = code_for_line_numbers[line_start:line_end][:200]
+                        else:
+                            line_number = -1
+                            matched_text = full_match[:200]
 
                     matches.append({
                         "pattern_name": pattern_name,
